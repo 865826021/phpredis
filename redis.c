@@ -2259,7 +2259,7 @@ PHP_METHOD(Redis, multi)
         } else {
             cmd_len = redis_cmd_format_static(&cmd, "MULTI", "");
             IF_PIPELINE() {
-                PIPELINE_ENQUEUE_COMMAND(cmd, cmd_len)
+                PIPELINE_ENQUEUE_COMMAND(cmd, cmd_len);
                 efree(cmd);
             } else {
                 SOCKET_WRITE_COMMAND(redis_sock, cmd, cmd_len)

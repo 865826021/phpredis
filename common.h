@@ -479,82 +479,24 @@ typedef enum _PUBSUB_TYPE {
 #define IF_PIPELINE() if (redis_sock->mode & PIPELINE)
 #define IF_NOT_PIPELINE() if (!(redis_sock->mode & PIPELINE))
 
-#define IF_MULTI_OR_ATOMIC() if (redis_sock->mode & MULTI || redis_sock->mode == ATOMIC)
-#define IF_MULTI_OR_PIPELINE() if (redis_sock->mode & (MULTI | PIPELINE))
-
-#define ELSE_IF_MULTI() else IF_MULTI() { \
-    if(redis_response_enqueued(redis_sock TSRMLS_CC) == 1) { \
-        RETURN_ZVAL(getThis(), 1, 0);\
-    } else { \
-        RETURN_FALSE; \
-    } \
-}
-
-#define ELSE_IF_PIPELINE() else IF_PIPELINE() { \
-    RETURN_ZVAL(getThis(), 1, 0);\
-}
-
-#define MULTI_RESPONSE(callback) IF_MULTI_OR_PIPELINE() { \
-    fold_item *f1, *current; \
-    f1 = malloc(sizeof(fold_item)); \
-    f1->fun = (void *)callback; \
-    f1->next = NULL; \
-    current = redis_sock->current;\
-    if(current) current->next = f1; \
-    redis_sock->current = f1; \
-  }
-
-#define PIPELINE_ENQUEUE_COMMAND(cmd, cmd_len) request_item *tmp; \
-    struct request_item *current_request;\
+#define PIPELINE_ENQUEUE_COMMAND(cmd, cmd_len) do { \
+    request_item *tmp; \
     tmp = malloc(sizeof(request_item));\
     tmp->request_str = calloc(cmd_len, 1);\
     memcpy(tmp->request_str, cmd, cmd_len);\
     tmp->request_size = cmd_len;\
     tmp->next = NULL;\
-    current_request = redis_sock->pipeline_current; \
-    if(current_request) {\
-        current_request->next = tmp;\
-    } \
+    if (redis_sock->pipeline_current) redis_sock->pipeline_current->next = tmp; \
     redis_sock->pipeline_current = tmp; \
     if(NULL == redis_sock->pipeline_head) { \
         redis_sock->pipeline_head = redis_sock->pipeline_current;\
-    }
+    } \
+} while (0)
 
 #define SOCKET_WRITE_COMMAND(redis_sock, cmd, cmd_len) \
     if(redis_sock_write(redis_sock, cmd, cmd_len TSRMLS_CC) < 0) { \
     efree(cmd); \
     RETURN_FALSE; \
-}
-
-#define REDIS_SAVE_CALLBACK(callback, closure_context) \
-    IF_MULTI_OR_PIPELINE() { \
-        fold_item *f1, *current; \
-        f1 = malloc(sizeof(fold_item)); \
-        f1->fun = (void *)callback; \
-        f1->ctx = closure_context; \
-        f1->next = NULL; \
-        current = redis_sock->current;\
-        if(current) current->next = f1; \
-        redis_sock->current = f1; \
-        if(NULL == redis_sock->head) { \
-            redis_sock->head = redis_sock->current;\
-        }\
-}
-
-#define REDIS_ELSE_IF_MULTI(function, closure_context) \
-    else IF_MULTI() { \
-        if(redis_response_enqueued(redis_sock TSRMLS_CC) == 1) {\
-            REDIS_SAVE_CALLBACK(function, closure_context); \
-            RETURN_ZVAL(getThis(), 1, 0);\
-        } else {\
-            RETURN_FALSE;\
-        }\
-}
-
-#define REDIS_ELSE_IF_PIPELINE(function, closure_context) \
-    else IF_PIPELINE() { \
-        REDIS_SAVE_CALLBACK(function, closure_context); \
-        RETURN_ZVAL(getThis(), 1, 0); \
 }
 
 #define REDIS_PROCESS_REQUEST(redis_sock, cmd, cmd_len) \
@@ -566,11 +508,26 @@ typedef enum _PUBSUB_TYPE {
     efree(cmd);
 
 #define REDIS_PROCESS_RESPONSE_CLOSURE(function, closure_context) \
-    REDIS_ELSE_IF_PIPELINE(function, closure_context) \
-    REDIS_ELSE_IF_MULTI(function, closure_context);
+    IF_NOT_PIPELINE() { \
+        if (redis_response_enqueued(redis_sock TSRMLS_CC) == 0) { \
+            RETURN_FALSE; \
+        } \
+    } \
+    fold_item *f1; \
+    f1 = malloc(sizeof(fold_item)); \
+    f1->fun = (void *)function; \
+    f1->ctx = closure_context; \
+    f1->next = NULL; \
+    if (redis_sock->current) redis_sock->current->next = f1; \
+    redis_sock->current = f1; \
+    if (NULL == redis_sock->head) { \
+        redis_sock->head = redis_sock->current; \
+    } \
+    RETURN_ZVAL(getThis(), 1, 0); \
 
-#define REDIS_PROCESS_RESPONSE(function) \
-    REDIS_PROCESS_RESPONSE_CLOSURE(function, NULL)
+#define REDIS_PROCESS_RESPONSE(function) else { \
+    REDIS_PROCESS_RESPONSE_CLOSURE(function, NULL) \
+}
 
 /* Clear redirection info */
 #define REDIS_MOVED_CLEAR(redis_sock) \
@@ -590,8 +547,9 @@ typedef enum _PUBSUB_TYPE {
     REDIS_PROCESS_REQUEST(redis_sock, cmd, cmd_len); \
     IF_ATOMIC() { \
         resp_func(INTERNAL_FUNCTION_PARAM_PASSTHRU, redis_sock, NULL, ctx); \
-    } \
-    REDIS_PROCESS_RESPONSE_CLOSURE(resp_func,ctx);
+    } else { \
+        REDIS_PROCESS_RESPONSE_CLOSURE(resp_func, ctx); \
+    }
 
 /* Process a command but with a specific command building function 
  * and keyword which is passed to us*/
@@ -605,8 +563,9 @@ typedef enum _PUBSUB_TYPE {
     REDIS_PROCESS_REQUEST(redis_sock, cmd, cmd_len); \
     IF_ATOMIC() { \
         resp_func(INTERNAL_FUNCTION_PARAM_PASSTHRU, redis_sock, NULL, ctx); \
-    } \
-    REDIS_PROCESS_RESPONSE_CLOSURE(resp_func,ctx);
+    } else { \
+        REDIS_PROCESS_RESPONSE_CLOSURE(resp_func, ctx); \
+    }
 
 #define REDIS_STREAM_CLOSE_MARK_FAILED(redis_sock) \
     redis_stream_close(redis_sock TSRMLS_CC); \
